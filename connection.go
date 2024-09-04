@@ -1,87 +1,88 @@
-package network
+package nets
 
 import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"time"
-
-	"github.com/mateothegreat/go-multilog/multilog"
 )
-
-type ConnectionType string
-
-const (
-	ConnectionTypeServer ConnectionType = "server"
-	ConnectionTypeClient ConnectionType = "client"
-)
-
-type Status int
-
-const (
-	Disconnected Status = iota
-	Reconnecting
-	Connecting
-	Connected
-)
-
-type Connection[T PacketFuncs] struct {
-	Type    ConnectionType
-	Conn    *net.TCPConn
-	ID      string
-	Addr    string
-	Timeout time.Duration
-	Status  Status
-	Changed chan Status
-	Context context.Context
-	Cancel  context.CancelFunc
-	Ch      chan *T
-	Mu      sync.Mutex
-	Cond    *sync.Cond
-	closed  bool
-}
 
 // NewConnection creates a new connection with the given ID and address.
 // Callers should call Connect() or Listen() on the returned connection
 // to initiate the connection process.
 //
 // Arguments:
-//   - id: The ID of the connection.
-//   - addr: The address of the connection.
+//   - NewConnectionArgs[T]: The arguments to pass to the connection.
 //
 // Returns:
-//   - A new connection with the given ID and address.
-func NewConnection[T PacketFuncs](id, addr string, timeout time.Duration) *Connection[T] {
+//   - *Connection[T]
+func NewConnection[T PacketFuncs](args NewConnectionArgs[T]) (*Connection[T], error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ret := &Connection[T]{
-		ID:      id,
-		Addr:    addr,
-		Status:  Disconnected,
-		Timeout: timeout,
-		Changed: make(chan Status),
-		Context: ctx,
-		Cancel:  cancel,
-		Ch:      make(chan *T),
-		Mu:      sync.Mutex{},
-		Cond:    sync.NewCond(&sync.Mutex{}),
+		// Required args:
+		ID:      args.ID,
+		Addr:    args.Addr,
+		Timeout: args.Timeout,
+		// Internal vars:
+		status:  Disconnected,
+		context: ctx,
+		cancel:  cancel,
+		mu:      sync.Mutex{},
 	}
-	return ret
+
+	if args.ID == "" {
+		return nil, fmt.Errorf("id argument is required")
+	}
+	if args.Addr == "" {
+		return nil, fmt.Errorf("addr argument is required")
+	}
+	if args.Timeout <= 1 {
+		return nil, fmt.Errorf("timeout duration argument must be greater than 1")
+	}
+	if args.Messages != nil {
+		ret.Messages = args.Messages
+	}
+
+	// Set optional callbacks
+	if args.OnConnection != nil {
+		ret.OnConnection = args.OnConnection
+	}
+	if args.OnDisconnect != nil {
+		ret.OnDisconnect = args.OnDisconnect
+	}
+	if args.OnClose != nil {
+		ret.OnClose = args.OnClose
+	}
+	if args.OnListen != nil {
+		ret.OnListen = args.OnListen
+	}
+	if args.OnStatus != nil {
+		ret.OnStatus = args.OnStatus
+	}
+	if args.OnPacket != nil {
+		ret.OnPacket = args.OnPacket
+	}
+	if args.OnError != nil {
+		ret.OnError = args.OnError
+	}
+
+	return ret, nil
 }
 
 // Connect connects to a TCP server and returns an error if it fails.
 // It will retry until it succeeds or the context is cancelled.
+//
+// Returns:
+//   - Error: An error if the connection fails.
 func (c *Connection[T]) Connect() error {
 	ch := make(chan *T)
 	defer close(ch)
 
 	addr, err := net.ResolveTCPAddr("tcp", c.Addr)
 	if err != nil {
-		multilog.Error(c.ID, "resolve addr error", map[string]any{
-			"addr":  c.Addr,
-			"error": err,
-		})
-		return err
+		return c.error(ResolveTCPAddrError, err)
 	}
 	go func() {
 		for {
@@ -89,18 +90,18 @@ func (c *Connection[T]) Connect() error {
 				conn, err := net.DialTCP("tcp", nil, addr)
 				if err != nil {
 					c.SetStatus(Disconnected)
-					multilog.Error(c.ID, "connect error", map[string]any{
-						"addr":  c.Addr,
-						"error": err,
-					})
+					if c.OnError != nil {
+						c.OnError(NewConnectionError, err)
+					}
+					// Continue to the next iteration of the loop for retry.
 					time.Sleep(c.Timeout)
 					continue
 				}
-				c.Conn = conn
+				c.conn = conn
 				c.SetStatus(Connected)
-				multilog.Debug(c.ID, "connected", map[string]any{
-					"addr": c.Conn.RemoteAddr(),
-				})
+				if c.OnConnection != nil {
+					c.OnConnection(conn.RemoteAddr())
+				}
 				return
 			}
 		}
@@ -112,57 +113,54 @@ func (c *Connection[T]) Connect() error {
 // It will retry every 500ms until it succeeds.
 func (c *Connection[T]) Listen() error {
 	if c.GetStatus() != Disconnected {
-		return fmt.Errorf("connection is already in use")
+		return fmt.Errorf("connection is already in a connected state")
 	}
 
 	addr, err := net.ResolveTCPAddr("tcp", c.Addr)
 	if err != nil {
-		multilog.Error(c.ID, "listen resolve addr error", map[string]any{
-			"addr":  c.Addr,
-			"error": err,
-		})
-		return err
+		return c.error(ResolveTCPAddrError, err)
 	}
 
 	go func() {
 		for {
 			select {
-			case <-c.Context.Done():
+			case <-c.context.Done():
 				return
 			default:
 				if c.GetStatus() == Disconnected {
-					multilog.Debug(c.ID, "listening", map[string]any{
-						"addr":   c.Addr,
-						"status": c.GetStatus(),
-					})
 					listener, err := net.ListenTCP("tcp", addr)
 					if err != nil {
-						multilog.Error(c.ID, "listen error", map[string]any{
-							"addr":  c.Addr,
-							"error": err,
-						})
+						c.error(ListenError, err)
 						c.SetStatus(Disconnected)
 						c.Close()
+						if c.OnClose != nil {
+							c.OnClose()
+						}
 						time.Sleep(c.Timeout)
 						continue
 					}
 
+					if c.OnListen != nil {
+						c.OnListen()
+					}
 					c.SetStatus(Connected)
-					multilog.Debug(c.ID, "listening", map[string]any{
-						"addr": c.Addr,
-					})
 
 					for {
-						conn, err := listener.AcceptTCP()
-						if err != nil {
-							multilog.Error(c.ID, "accept error", map[string]any{
-								"addr":  c.Addr,
-								"error": err,
-							})
-							continue
+						select {
+						case <-c.context.Done():
+							return
+						default:
+							conn, err := listener.AcceptTCP()
+							if err != nil {
+								c.error(ListenAcceptError, err)
+								continue
+							}
+							c.conn = conn
+							if c.OnConnection != nil {
+								c.OnConnection(conn.RemoteAddr())
+							}
+							go c.handleConnection(conn)
 						}
-						c.Conn = conn
-						go c.handleConnection(conn)
 					}
 				}
 			}
@@ -172,117 +170,185 @@ func (c *Connection[T]) Listen() error {
 }
 
 // handleConnection handles a new TCP connection for reading and writing packets.
-func (c *Connection[T]) handleConnection(conn *net.TCPConn) {
-	multilog.Debug(c.ID, "handling new connection", map[string]any{
-		"addr": conn.RemoteAddr(),
-	})
+// This is a blocking function that will continue until the connection is closed
+// or an error occurs and should be run as a goroutine to not block the main thread.
 
+// Arguments:
+//   - *net.TCPConn: The TCP connection to handle.
+func (c *Connection[T]) handleConnection(conn *net.TCPConn) {
 	buf := make([]byte, 1024)
 	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			conn.Close()
+		select {
+		case <-c.context.Done():
 			return
+		default:
+			n, err := conn.Read(buf)
+			if err != nil {
+				c.error(PacketReadError, err)
+				return
+			}
+			packet := c.NewPacket()
+			err = packet.Decode(buf[:n])
+			if err != nil {
+				c.error(PacketDecodeError, err)
+				continue
+			}
+			if c.Messages != nil {
+				c.Messages <- packet
+			}
+			if c.OnPacket != nil {
+				c.OnPacket(packet)
+			}
 		}
-		packet := c.NewPacket()
-		err = packet.Decode(buf[:n])
-		if err != nil {
-			multilog.Error(c.ID, "error decoding packet", map[string]any{
-				"addr":  conn.RemoteAddr(),
-				"error": err,
-			})
-			continue
-		}
-		c.Ch <- &packet // Directly use packet as it is of type *T
 	}
 }
 
-func (c *Connection[T]) Write(p *T) (int, error) {
+// Write writes a packet to the connection.
+// It is safe to call this function from multiple goroutines.
+//
+// Arguments:
+//   - p: The packet to write to the connection.
+//
+// Returns:
+//   - int: The number of bytes written.
+func (c *Connection[T]) Write(p T) (int, error) {
 	if c.GetStatus() == Connected {
-		data, err := (*p).Encode()
+		data, err := p.Encode()
 		if err != nil {
-			return 0, err
+			return 0, c.error(PacketEncodeError, err)
 		}
-		n, err := c.Conn.Write(data)
+		n, err := c.conn.Write(data)
 		if err != nil {
-			multilog.Error(c.ID, "error writing to connection", map[string]any{
-				"addr":  c.Addr,
-				"error": err,
-			})
 			c.SetStatus(Disconnected)
 			c.Close()
 			go c.Connect()
-			return 0, err
+			return 0, c.error(PacketWriteError, err)
 		}
-		return n, err
+		return n, nil
 	}
-	return 0, fmt.Errorf("connection not connected")
+	return 0, c.error(ConnectionClosedError, fmt.Errorf("connection is not connected"))
 }
 
+// Read reads a packet from the connection.
+// It is safe to call this function from multiple goroutines.
+//
+// Arguments:
+//   - b: The buffer to read the packet into.
+//
+// Returns:
+//   - int: The number of bytes read.
 func (c *Connection[T]) Read(b []byte) (int, *T, error) {
 	if c.GetStatus() == Connected {
-		n, err := c.Conn.Read(b)
+		n, err := c.conn.Read(b)
 		if err != nil {
-			multilog.Error(c.ID, "error reading from connection", map[string]any{
-				"addr":  c.Addr,
-				"error": err,
-			})
 			c.SetStatus(Disconnected)
 			c.Close()
 			go c.Connect()
-			return 0, nil, err
+			return 0, nil, c.error(ConnectionResetByPeerError, err)
 		}
 		packet := c.NewPacket()
 		err = packet.Decode(b[:n])
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, c.error(PacketDecodeError, err)
 		}
 		return n, &packet, nil
 	}
 	return 0, nil, nil
 }
 
+// WaitForStatus waits for the connection to reach the given status.
+// It is recommended to use OnStatus instead of this function.
+//
+// Arguments:
+//   - Status: The status to wait for.
+//   - timeout: The maximum time to wait for the status.
+func (c *Connection[T]) WaitForStatus(status Status, timeout time.Duration) error {
+	if c.GetStatus() == status {
+		return nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			return c.error(WaitForStatusTimeoutError, fmt.Errorf("timeout waiting for status %d within %d", status, timeout))
+		case <-c.context.Done():
+			return ContextCancelledError
+		default:
+			if c.GetStatus() == status {
+				return nil
+			}
+		}
+	}
+}
+
+// GetStatus returns the current status of the connection.
+// It is safe to call this function from multiple goroutines.
+//
+// Returns:
+//   - Status: The current status of the connection.
+func (c *Connection[T]) GetStatus() Status {
+	if c.mu.TryLock() {
+		defer c.mu.Unlock()
+		return c.status
+	}
+	return c.status
+}
+
+// SetStatus sets the status of the connection and notifies any waiters
+// that the status has changed if the status is different and the status
+// channel arg is not nil.
+//
+// Arguments:
+//   - Status: The status to set the connection to.
+func (c *Connection[T]) SetStatus(status Status) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.status == status {
+		return
+	}
+	if c.OnStatus != nil {
+		c.OnStatus(status)
+	}
+	c.status = status
+}
+
+// Close closes the connection and sets the status to Disconnected.
+// It is safe to call this function from multiple goroutines.
+//
+// Returns:
+//   - Error: An error if the connection fails to close.
 func (c *Connection[T]) Close() error {
 	if c.GetStatus() == Disconnected {
 		return nil
 	}
-	multilog.Debug(c.ID, "closing connection", map[string]any{
-		"addr": c.Addr,
-	})
-	if c.Conn != nil {
-		c.Conn.Close()
-		c.Conn = nil
+	if c.conn != nil {
+		c.cancel()
+		if err := c.conn.Close(); err != nil {
+			return c.error(ConnectionClosedError, err)
+		}
+		c.conn = nil
 	}
-	c.closed = true
 	c.SetStatus(Disconnected)
+	if c.OnClose != nil {
+		c.OnClose()
+	}
 	return nil
 }
 
-func (c *Connection[T]) WaitForStatus(status Status) {
-	c.Mu.Lock()
-	defer c.Mu.Unlock()
-	for c.GetStatus() != status {
-		c.Cond.Wait()
+func (c *Connection[T]) error(err error, original error) error {
+	if c.OnError != nil {
+		c.OnError(err, original)
 	}
+	return err
 }
 
-func (c *Connection[T]) GetStatus() Status {
-	c.Mu.Lock()
-	defer c.Mu.Unlock()
-	return c.Status
-}
-
-func (c *Connection[T]) SetStatus(status Status) {
-	c.Mu.Lock()
-	defer c.Mu.Unlock()
-	if c.Status == status {
-		println("status already set", status)
-		return
-	}
-	c.Status = status
-}
-
+// NewPacket creates a new packet of type T.
+// This is used when decoding a packet to create a new packet of the correct type.
+//
+// Returns:
+//   - T: A new packet of type T.
 func (c *Connection[T]) NewPacket() T {
 	var packet T
-	return packet
+	return reflect.New(reflect.TypeOf(packet).Elem()).Interface().(T)
 }

@@ -2,11 +2,11 @@
 
 ## Features
 
-- Easily create a connection to a remote server.
-- Automatic reconnect logic.
+- Easily create a server or client in one line.
+- Automagic reconnect logic 🚀.
 - Send and receive packets.
-- Handle connection status changes.
-- Built-in support for binary.BigEndian encoding.
+- Handles connection status changes.
+- Bring-your-own-encoding with an `Encode()` and `Decode()` method.
 
 ## Usage
 

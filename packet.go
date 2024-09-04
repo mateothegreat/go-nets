@@ -1,4 +1,4 @@
-package network
+package nets
 
 import (
 	"bytes"
@@ -117,7 +117,7 @@ func parseSize(tag string) (int, error) {
 	var size int
 	_, err := fmt.Sscanf(tag, "[%d]byte", &size)
 	if err != nil {
-		return 0, errors.New("invalid tag format")
+		return 0, errors.New("invalid size tag")
 	}
 	return size, nil
 }

@@ -1,72 +1,123 @@
-package network
+package nets
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"testing"
 	"time"
 
-	"github.com/mateothegreat/go-multilog/multilog"
 	"github.com/stretchr/testify/suite"
 )
 
 type SimpleStruct struct {
-	Foo string `binary:"[24]string"`
+	Foo string `json:"foo"`
 }
 
-func (s SimpleStruct) Encode() ([]byte, error) {
+func (s *SimpleStruct) Encode() ([]byte, error) {
 	return json.Marshal(s)
 }
 
-func (s SimpleStruct) Decode(data []byte) error {
-	return json.Unmarshal(data, &s)
+func (s *SimpleStruct) Decode(data []byte) error {
+	err := json.Unmarshal(data, s)
+	if err != nil {
+		fmt.Printf("error decoding: %v\n", err)
+		return err
+	}
+	return nil
 }
 
 type TestSourceSuite struct {
 	suite.Suite
-	ctx    context.Context
-	cancel context.CancelFunc
-	server *Connection[SimpleStruct]
-	client *Connection[SimpleStruct]
 }
 
 func TestSuiteTest(t *testing.T) {
 	suite.Run(t, new(TestSourceSuite))
 }
 
-func (suite *TestSourceSuite) SetupSuite() {
-	multilog.RegisterLogger(multilog.LogMethod("console"), multilog.NewConsoleLogger(&multilog.NewConsoleLoggerArgs{
-		Level:  multilog.DEBUG,
-		Format: multilog.FormatText,
-	}))
-	suite.ctx, suite.cancel = context.WithCancel(context.Background())
-}
-
-func (suite *TestSourceSuite) TearDownSuite() {
-	suite.cancel()
-}
-
 func (suite *TestSourceSuite) TestConnection() {
-	suite.server = NewConnection[SimpleStruct]("receiver", "127.0.0.1:5200", 500*time.Millisecond)
-	if err := suite.server.Listen(); err != nil {
-		suite.FailNow("Failed to listen", err)
-	}
+	// We create a context and cancel function to control the lifetime of the
+	// test which will be used to stop the goroutines like listening for packets.
+	ctx, cancel := context.WithCancel(context.Background())
 
-	time.Sleep(1000 * time.Millisecond)
+	// First, we create the server.
+	server, err := NewConnection(NewConnectionArgs[*SimpleStruct]{
+		ID:       "receiver",
+		Addr:     "127.0.0.1:5200",
+		Timeout:  500 * time.Millisecond,
+		Messages: make(chan *SimpleStruct),
+		OnClose: func() {
+		},
+		OnStatus: func(status Status) {
+			if status == Connected {
+				suite.T().Log("server listening")
+			}
+		},
+		OnConnection: func(addr net.Addr) {
+			suite.T().Log("server connection", addr)
+		},
+		OnPacket: func(packet *SimpleStruct) {
+			suite.T().Log("server packet", packet)
+		},
+		OnError: func(err error, original error) {
+			suite.T().Log("OnError", err)
+		},
+	})
 
-	suite.client = NewConnection[SimpleStruct]("sender", "127.0.0.1:5200", 500*time.Millisecond)
-	if err := suite.client.Connect(); err != nil {
-		suite.FailNow("Failed to connect", err)
-	}
+	suite.NoError(err)
 
-	time.Sleep(1000 * time.Millisecond)
-	n, err := suite.client.Write(&SimpleStruct{Foo: "bar"})
+	// We start the server.
+	suite.NoError(server.Listen())
+
+	// We wait for the server to connect to the client.
+	suite.NoError(server.WaitForStatus(Connected, 1*time.Second))
+
+	// Next, we create the client.
+	client, err := NewConnection(NewConnectionArgs[*SimpleStruct]{
+		ID:      "sender",
+		Addr:    "127.0.0.1:5200",
+		Timeout: 500 * time.Millisecond,
+	})
+	suite.NoError(err)
+
+	// We connect the client to the server.
+	suite.NoError(client.Connect())
+
+	// We wait for the client to connect to the server.
+	suite.NoError(client.WaitForStatus(Connected, 1*time.Second))
+
+	// Now we start a goroutine to listen for packets from the server.
+	go func() {
+		for {
+			select {
+			// If the context is done, we should exit the loop and goroutine.
+			case <-ctx.Done():
+				return
+			// If we receive a packet, we should check the value and cancel the
+			// context to stop the goroutine.
+			case packet := <-server.Messages:
+				suite.Equal("bar", (*packet).Foo)
+				// We cancel the context and stop the goroutine so the test can finish.
+				cancel()
+				return
+			}
+		}
+	}()
+
+	// We send a packet to the server.
+	n, err := client.Write(&SimpleStruct{Foo: "bar"})
 	suite.NoError(err)
 	suite.Equal(13, n)
-	time.Sleep(1000 * time.Millisecond)
-	suite.server.Close()
 
-	// time.Sleep(100 * time.Millisecond)
+	// We close the server and client.
+	suite.NoError(server.Close())
+	suite.NoError(client.Close())
 
-	// suite.Equal(Disconnected, suite.client.Status)
+	// We wait for the goroutine to finish before checking the status.
+	<-ctx.Done()
+
+	// We check the status of the server and client.
+	suite.Equal(Disconnected, server.GetStatus())
+	suite.Equal(Disconnected, client.GetStatus())
 }
