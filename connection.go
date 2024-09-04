@@ -22,7 +22,6 @@ func NewConnection[T PacketFuncs](args NewConnectionArgs[T]) (*Connection[T], er
 	ctx, cancel := context.WithCancel(context.Background())
 	ret := &Connection[T]{
 		// Required args:
-		ID:      args.ID,
 		Addr:    args.Addr,
 		Timeout: args.Timeout,
 		// Internal vars:
@@ -32,9 +31,6 @@ func NewConnection[T PacketFuncs](args NewConnectionArgs[T]) (*Connection[T], er
 		mu:      sync.Mutex{},
 	}
 
-	if args.ID == "" {
-		return nil, fmt.Errorf("id argument is required")
-	}
 	if args.Addr == "" {
 		return nil, fmt.Errorf("addr argument is required")
 	}
