@@ -1,4 +1,4 @@
-module github.com/nvr-ai/go-net
+module github.com/mateothegreat/go-nets
 
 go 1.23.0
 
