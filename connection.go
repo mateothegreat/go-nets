@@ -22,8 +22,9 @@ func NewConnection[T PacketFuncs](args NewConnectionArgs[T]) (*Connection[T], er
 	ctx, cancel := context.WithCancel(context.Background())
 	ret := &Connection[T]{
 		// Required args:
-		Addr:    args.Addr,
-		Timeout: args.Timeout,
+		Addr:       args.Addr,
+		Timeout:    args.Timeout,
+		BufferSize: args.BufferSize,
 		// Internal vars:
 		status:  Disconnected,
 		context: ctx,
@@ -39,6 +40,10 @@ func NewConnection[T PacketFuncs](args NewConnectionArgs[T]) (*Connection[T], er
 	}
 	if args.Messages != nil {
 		ret.Messages = args.Messages
+	}
+
+	if args.BufferSize <= 0 {
+		ret.BufferSize = 1024 * 1024
 	}
 
 	// Set optional callbacks
@@ -172,7 +177,7 @@ func (c *Connection[T]) Listen() error {
 // Arguments:
 //   - *net.TCPConn: The TCP connection to handle.
 func (c *Connection[T]) handleConnection(conn *net.TCPConn) {
-	buf := make([]byte, 1024)
+	buf := make([]byte, c.BufferSize)
 	for {
 		select {
 		case <-c.context.Done():
@@ -213,6 +218,9 @@ func (c *Connection[T]) Write(p T) (int, error) {
 		if err != nil {
 			return 0, c.error(PacketEncodeError, err)
 		}
+		if len(data) > c.BufferSize {
+			return 0, c.error(PacketWriteError, fmt.Errorf("packet is too large for buffer size %d", c.BufferSize))
+		}
 		n, err := c.conn.Write(data)
 		if err != nil {
 			c.SetStatus(Disconnected)
@@ -235,6 +243,9 @@ func (c *Connection[T]) Write(p T) (int, error) {
 //   - int: The number of bytes read.
 func (c *Connection[T]) Read(b []byte) (int, *T, error) {
 	if c.GetStatus() == Connected {
+		if len(b) > c.BufferSize {
+			return 0, nil, c.error(PacketReadError, fmt.Errorf("buffer size %d is too large for packet size %d", c.BufferSize, len(b)))
+		}
 		n, err := c.conn.Read(b)
 		if err != nil {
 			c.SetStatus(Disconnected)

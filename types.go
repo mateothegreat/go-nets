@@ -50,10 +50,11 @@ func (e Error) Error() string {
 // The type T is the type of the packet functions.
 type Connection[T PacketFuncs] struct {
 	// Customizable vars:
-	ID       string
-	Addr     string
-	Timeout  time.Duration
-	Messages chan T
+	ID         string
+	Addr       string
+	Timeout    time.Duration
+	BufferSize int
+	Messages   chan T
 	// Callbacks:
 	OnConnection func(net.Addr)
 	OnDisconnect func(net.Addr)
@@ -78,6 +79,7 @@ type NewConnectionArgs[T PacketFuncs] struct {
 	ID           string
 	Addr         string
 	Timeout      time.Duration
+	BufferSize   int
 	Messages     chan T
 	OnConnection func(net.Addr)
 	OnDisconnect func(net.Addr)

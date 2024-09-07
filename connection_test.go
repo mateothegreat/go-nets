@@ -63,6 +63,7 @@ func (suite *TestSourceSuite) TestConnection() {
 		OnError: func(err error, original error) {
 			suite.T().Log("OnError", err)
 		},
+		BufferSize: 13,
 	})
 
 	suite.NoError(err)
@@ -75,9 +76,10 @@ func (suite *TestSourceSuite) TestConnection() {
 
 	// Next, we create the client.
 	client, err := NewConnection(NewConnectionArgs[*SimpleStruct]{
-		ID:      "sender",
-		Addr:    "127.0.0.1:5200",
-		Timeout: 500 * time.Millisecond,
+		ID:         "sender",
+		Addr:       "127.0.0.1:5200",
+		Timeout:    500 * time.Millisecond,
+		BufferSize: 13,
 	})
 	suite.NoError(err)
 
