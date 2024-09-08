@@ -42,11 +42,11 @@ func (suite *TestSourceSuite) TestConnection() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// First, we create the server.
-	server, err := NewConnection(NewConnectionArgs[*SimpleStruct]{
+	server, err := NewConnection(NewConnectionArgs{
 		ID:       "receiver",
 		Addr:     "127.0.0.1:5200",
 		Timeout:  500 * time.Millisecond,
-		Messages: make(chan *SimpleStruct),
+		Messages: make(chan []byte),
 		OnClose: func() {
 		},
 		OnStatus: func(status Status) {
@@ -57,8 +57,8 @@ func (suite *TestSourceSuite) TestConnection() {
 		OnConnection: func(addr net.Addr) {
 			suite.T().Log("server connection", addr)
 		},
-		OnPacket: func(packet *SimpleStruct) {
-			suite.T().Log("server packet", packet)
+		OnPacket: func(packet []byte) {
+			suite.T().Log("server packet", string(packet))
 		},
 		OnError: func(err error, original error) {
 			suite.T().Log("OnError", err)
@@ -75,7 +75,7 @@ func (suite *TestSourceSuite) TestConnection() {
 	suite.NoError(server.WaitForStatus(Connected, 1*time.Second))
 
 	// Next, we create the client.
-	client, err := NewConnection(NewConnectionArgs[*SimpleStruct]{
+	client, err := NewConnection(NewConnectionArgs{
 		ID:         "sender",
 		Addr:       "127.0.0.1:5200",
 		Timeout:    500 * time.Millisecond,
@@ -98,8 +98,8 @@ func (suite *TestSourceSuite) TestConnection() {
 				return
 			// If we receive a packet, we should check the value and cancel the
 			// context to stop the goroutine.
-			case packet := <-server.Messages:
-				suite.Equal("bar", (*packet).Foo)
+			case packet := <-server.Packets:
+				suite.Equal("bar", string(packet))
 				// We cancel the context and stop the goroutine so the test can finish.
 				cancel()
 				return
@@ -108,9 +108,9 @@ func (suite *TestSourceSuite) TestConnection() {
 	}()
 
 	// We send a packet to the server.
-	n, err := client.Write(&SimpleStruct{Foo: "bar"})
+	n, err := client.Write([]byte("bar"))
 	suite.NoError(err)
-	suite.Equal(13, n)
+	suite.Equal(3, n)
 
 	// We close the server and client.
 	suite.NoError(server.Close())

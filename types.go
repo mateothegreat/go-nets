@@ -48,20 +48,20 @@ func (e Error) Error() string {
 
 // Connection represents both a client and server connection instance.
 // The type T is the type of the packet functions.
-type Connection[T PacketFuncs] struct {
+type Connection struct {
 	// Customizable vars:
 	ID         string
 	Addr       string
 	Timeout    time.Duration
 	BufferSize int
-	Messages   chan T
+	Packets    chan []byte
 	// Callbacks:
 	OnConnection func(net.Addr)
 	OnDisconnect func(net.Addr)
 	OnClose      func()
 	OnListen     func()
 	OnStatus     func(status Status)
-	OnPacket     func(packet T)
+	OnPacket     func(packet []byte)
 	OnError      func(err error, original error)
 	// Internal vars:
 	conn    *net.TCPConn
@@ -75,17 +75,17 @@ type Connection[T PacketFuncs] struct {
 // ID, Addr, and Timeout are required.
 // OnConnect, OnDisconnect, OnClose, OnStatus, OnPacket, and OnError are optional.
 // If not set, they will be no-op functions.
-type NewConnectionArgs[T PacketFuncs] struct {
+type NewConnectionArgs struct {
 	ID           string
 	Addr         string
 	Timeout      time.Duration
 	BufferSize   int
-	Messages     chan T
+	Messages     chan []byte
 	OnConnection func(net.Addr)
 	OnDisconnect func(net.Addr)
 	OnListen     func()
 	OnClose      func()
 	OnStatus     func(status Status)
-	OnPacket     func(packet T)
+	OnPacket     func(packet []byte)
 	OnError      func(err error, original error)
 }

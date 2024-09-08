@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"reflect"
 	"sync"
 	"time"
 )
@@ -18,9 +17,9 @@ import (
 //
 // Returns:
 //   - *Connection[T]
-func NewConnection[T PacketFuncs](args NewConnectionArgs[T]) (*Connection[T], error) {
+func NewConnection(args NewConnectionArgs) (*Connection, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	ret := &Connection[T]{
+	ret := &Connection{
 		// Required args:
 		Addr:       args.Addr,
 		Timeout:    args.Timeout,
@@ -39,7 +38,7 @@ func NewConnection[T PacketFuncs](args NewConnectionArgs[T]) (*Connection[T], er
 		return nil, fmt.Errorf("timeout duration argument must be greater than 1")
 	}
 	if args.Messages != nil {
-		ret.Messages = args.Messages
+		ret.Packets = args.Messages
 	}
 
 	if args.BufferSize <= 0 {
@@ -77,8 +76,8 @@ func NewConnection[T PacketFuncs](args NewConnectionArgs[T]) (*Connection[T], er
 //
 // Returns:
 //   - Error: An error if the connection fails.
-func (c *Connection[T]) Connect() error {
-	ch := make(chan *T)
+func (c *Connection) Connect() error {
+	ch := make(chan []byte)
 	defer close(ch)
 
 	addr, err := net.ResolveTCPAddr("tcp", c.Addr)
@@ -112,7 +111,7 @@ func (c *Connection[T]) Connect() error {
 
 // Listen listens for incoming connections and handles them.
 // It will retry every 500ms until it succeeds.
-func (c *Connection[T]) Listen() error {
+func (c *Connection) Listen() error {
 	if c.GetStatus() != Disconnected {
 		return fmt.Errorf("connection is already in a connected state")
 	}
@@ -176,7 +175,7 @@ func (c *Connection[T]) Listen() error {
 
 // Arguments:
 //   - *net.TCPConn: The TCP connection to handle.
-func (c *Connection[T]) handleConnection(conn *net.TCPConn) {
+func (c *Connection) handleConnection(conn *net.TCPConn) {
 	buf := make([]byte, c.BufferSize)
 	for {
 		select {
@@ -188,17 +187,11 @@ func (c *Connection[T]) handleConnection(conn *net.TCPConn) {
 				c.error(PacketReadError, err)
 				return
 			}
-			packet := c.NewPacket()
-			err = packet.Decode(buf[:n])
-			if err != nil {
-				c.error(PacketDecodeError, err)
-				continue
-			}
-			if c.Messages != nil {
-				c.Messages <- packet
+			if c.Packets != nil {
+				c.Packets <- buf[:n]
 			}
 			if c.OnPacket != nil {
-				c.OnPacket(packet)
+				c.OnPacket(buf[:n])
 			}
 		}
 	}
@@ -212,20 +205,13 @@ func (c *Connection[T]) handleConnection(conn *net.TCPConn) {
 //
 // Returns:
 //   - int: The number of bytes written.
-func (c *Connection[T]) Write(p T) (int, error) {
+func (c *Connection) Write(p []byte) (int, error) {
 	if c.GetStatus() == Connected {
-		data, err := p.Encode()
-		if err != nil {
-			return 0, c.error(PacketEncodeError, err)
-		}
-		if len(data) > c.BufferSize {
+		if len(p) > c.BufferSize {
 			return 0, c.error(PacketWriteError, fmt.Errorf("packet is too large for buffer size %d", c.BufferSize))
 		}
-		n, err := c.conn.Write(data)
+		n, err := c.conn.Write(p)
 		if err != nil {
-			c.SetStatus(Disconnected)
-			c.Close()
-			go c.Connect()
 			return 0, c.error(PacketWriteError, err)
 		}
 		return n, nil
@@ -241,7 +227,7 @@ func (c *Connection[T]) Write(p T) (int, error) {
 //
 // Returns:
 //   - int: The number of bytes read.
-func (c *Connection[T]) Read(b []byte) (int, *T, error) {
+func (c *Connection) Read(b []byte) (int, []byte, error) {
 	if c.GetStatus() == Connected {
 		if len(b) > c.BufferSize {
 			return 0, nil, c.error(PacketReadError, fmt.Errorf("buffer size %d is too large for packet size %d", c.BufferSize, len(b)))
@@ -253,12 +239,7 @@ func (c *Connection[T]) Read(b []byte) (int, *T, error) {
 			go c.Connect()
 			return 0, nil, c.error(ConnectionResetByPeerError, err)
 		}
-		packet := c.NewPacket()
-		err = packet.Decode(b[:n])
-		if err != nil {
-			return 0, nil, c.error(PacketDecodeError, err)
-		}
-		return n, &packet, nil
+		return n, b[:n], nil
 	}
 	return 0, nil, nil
 }
@@ -269,7 +250,7 @@ func (c *Connection[T]) Read(b []byte) (int, *T, error) {
 // Arguments:
 //   - Status: The status to wait for.
 //   - timeout: The maximum time to wait for the status.
-func (c *Connection[T]) WaitForStatus(status Status, timeout time.Duration) error {
+func (c *Connection) WaitForStatus(status Status, timeout time.Duration) error {
 	if c.GetStatus() == status {
 		return nil
 	}
@@ -294,7 +275,7 @@ func (c *Connection[T]) WaitForStatus(status Status, timeout time.Duration) erro
 //
 // Returns:
 //   - Status: The current status of the connection.
-func (c *Connection[T]) GetStatus() Status {
+func (c *Connection) GetStatus() Status {
 	if c.mu.TryLock() {
 		defer c.mu.Unlock()
 		return c.status
@@ -308,7 +289,7 @@ func (c *Connection[T]) GetStatus() Status {
 //
 // Arguments:
 //   - Status: The status to set the connection to.
-func (c *Connection[T]) SetStatus(status Status) {
+func (c *Connection) SetStatus(status Status) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.status == status {
@@ -325,7 +306,7 @@ func (c *Connection[T]) SetStatus(status Status) {
 //
 // Returns:
 //   - Error: An error if the connection fails to close.
-func (c *Connection[T]) Close() error {
+func (c *Connection) Close() error {
 	if c.GetStatus() == Disconnected {
 		return nil
 	}
@@ -343,19 +324,27 @@ func (c *Connection[T]) Close() error {
 	return nil
 }
 
-func (c *Connection[T]) error(err error, original error) error {
+// error is a helper function to call the OnError callback if it is set.
+// It is safe to call this function from multiple goroutines.
+//
+// Arguments:
+//   - err: The error to pass to the OnError callback.
+//   - original: The original error that caused the error.
+//
+// Returns:
+func (c *Connection) error(err error, original error) error {
 	if c.OnError != nil {
 		c.OnError(err, original)
 	}
 	return err
 }
 
-// NewPacket creates a new packet of type T.
+// NewPacket creates a new packet of type []byte.
 // This is used when decoding a packet to create a new packet of the correct type.
 //
 // Returns:
-//   - T: A new packet of type T.
-func (c *Connection[T]) NewPacket() T {
-	var packet T
-	return reflect.New(reflect.TypeOf(packet).Elem()).Interface().(T)
+//   - []byte: A new packet of type []byte.
+func (c *Connection) NewPacket() []byte {
+	var packet []byte
+	return packet
 }
