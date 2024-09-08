@@ -212,6 +212,11 @@ func (c *Connection) Write(p []byte) (int, error) {
 		}
 		n, err := c.conn.Write(p)
 		if err != nil {
+			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "write: broken pipe" {
+				c.Close()
+				c.Connect()
+				return 0, c.error(ConnectionResetByPeerError, err)
+			}
 			return 0, c.error(PacketWriteError, err)
 		}
 		return n, nil
