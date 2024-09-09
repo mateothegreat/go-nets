@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"testing"
 	"time"
 
@@ -30,75 +29,88 @@ func (s *SimpleStruct) Decode(data []byte) error {
 
 type TestSourceSuite struct {
 	suite.Suite
+	addr string
 }
 
 func TestSuiteTest(t *testing.T) {
 	suite.Run(t, new(TestSourceSuite))
 }
 
-func (suite *TestSourceSuite) TestConnection() {
-	// We create a context and cancel function to control the lifetime of the
+func (suite *TestSourceSuite) SetupTest() {
+	suite.addr = "127.0.0.1:5200"
+}
+
+func (suite *TestSourceSuite) TestTCPConnection() {
+	// Create a context and cancel function to control the lifetime of the
 	// test which will be used to stop the goroutines like listening for packets.
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// First, we create the server.
-	server, err := NewConnection(NewConnectionArgs{
-		ID:       "receiver",
-		Addr:     "127.0.0.1:5200",
-		Timeout:  500 * time.Millisecond,
-		Messages: make(chan []byte),
+	// Create the server.
+	server, err := NewTCPConnection(NewConnectionArgs{
+		Addr:       suite.addr,
+		BufferSize: 13,
+		Timeout:    500 * time.Millisecond,
+		Channel:    make(chan []byte),
 		OnClose: func() {
 		},
-		OnStatus: func(status Status) {
-			if status == Connected {
-				suite.T().Log("server listening")
-			}
+		OnStatus: func(current Status, previous Status) {
+			suite.T().Logf("server status: %s -> %s", previous, current)
 		},
-		OnConnection: func(addr net.Addr) {
-			suite.T().Log("server connection", addr)
+		OnConnection: func() {
+			suite.T().Log("server received connection from client")
+		},
+		OnListen: func() {
+			suite.T().Log("server listening")
 		},
 		OnPacket: func(packet []byte) {
-			suite.T().Log("server packet", string(packet))
+			suite.T().Logf("server received packet from client: %s", string(packet))
 		},
 		OnError: func(err error, original error) {
-			suite.T().Log("OnError", err)
+			suite.T().Logf("OnError: %s, %s", err.Error(), original.Error())
 		},
-		BufferSize: 13,
 	})
-
 	suite.NoError(err)
 
-	// We start the server.
+	// Start the server.
 	suite.NoError(server.Listen())
 
-	// We wait for the server to connect to the client.
+	// Wait for the server to connect to the client.
 	suite.NoError(server.WaitForStatus(Connected, 1*time.Second))
 
 	// Next, we create the client.
-	client, err := NewConnection(NewConnectionArgs{
-		ID:         "sender",
-		Addr:       "127.0.0.1:5200",
-		Timeout:    500 * time.Millisecond,
+	client, err := NewTCPConnection(NewConnectionArgs{
+		Addr:       suite.addr,
 		BufferSize: 13,
+		Timeout:    500 * time.Millisecond,
+		OnStatus: func(current Status, previous Status) {
+			suite.T().Logf("OnStatus: client status: %s -> %s", previous, current)
+		},
 	})
 	suite.NoError(err)
 
-	// We connect the client to the server.
+	// Connect the client to the server.
 	suite.NoError(client.Connect())
 
-	// We wait for the client to connect to the server.
+	// Wait for the client to connect to the server.
 	suite.NoError(client.WaitForStatus(Connected, 1*time.Second))
 
 	// Now we start a goroutine to listen for packets from the server.
 	go func() {
+		timeout := time.After(5 * time.Second) // Set the timeout duration
 		for {
 			select {
 			// If the context is done, we should exit the loop and goroutine.
 			case <-ctx.Done():
 				return
+			// If the timeout occurs, we should cancel the context and stop the goroutine.
+			case <-timeout:
+				suite.T().Error("timeout waiting for packet")
+				cancel()
+				return
 			// If we receive a packet, we should check the value and cancel the
 			// context to stop the goroutine.
-			case packet := <-server.Packets:
+			case packet := <-server.Channel:
+				suite.T().Logf("client received packet from server: %s", string(packet))
 				suite.Equal("bar", string(packet))
 				// We cancel the context and stop the goroutine so the test can finish.
 				cancel()
@@ -112,12 +124,108 @@ func (suite *TestSourceSuite) TestConnection() {
 	suite.NoError(err)
 	suite.Equal(3, n)
 
+	// We wait for the goroutine to finish before checking the status.
+	<-ctx.Done()
+
 	// We close the server and client.
 	suite.NoError(server.Close())
 	suite.NoError(client.Close())
 
+	// We check the status of the server and client.
+	suite.Equal(Disconnected, server.GetStatus())
+	suite.Equal(Disconnected, client.GetStatus())
+}
+
+func (suite *TestSourceSuite) TestUDPConnection() {
+	// Create a context and cancel function to control the lifetime of the
+	// test which will be used to stop the goroutines like listening for packets.
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create the server.
+	server, err := NewUDPConnection(NewConnectionArgs{
+		Addr:       suite.addr,
+		BufferSize: 13,
+		Timeout:    500 * time.Millisecond,
+		Channel:    make(chan []byte),
+		OnClose: func() {
+		},
+		OnStatus: func(current Status, previous Status) {
+			suite.T().Logf("OnStatus: server status: %s -> %s", previous, current)
+		},
+		OnConnection: func() {
+			suite.T().Log("OnConnection: server received connection from client")
+		},
+		OnListen: func() {
+			suite.T().Log("OnListen: server listening")
+		},
+		OnPacket: func(packet []byte) {
+			suite.T().Logf("OnPacket: server received packet from client: %s", string(packet))
+		},
+		OnError: func(err error, original error) {
+			suite.T().Logf("OnError: %s, %s", err.Error(), original.Error())
+		},
+	})
+	suite.NoError(err)
+
+	// Start the server.
+	suite.NoError(server.Listen())
+
+	// Wait for the server to connect to the client.
+	suite.NoError(server.WaitForStatus(Connected, 1*time.Second))
+
+	// Next, we create the client.
+	client, err := NewUDPConnection(NewConnectionArgs{
+		Addr:       suite.addr,
+		BufferSize: 13,
+		Timeout:    500 * time.Millisecond,
+		OnStatus: func(current Status, previous Status) {
+			suite.T().Logf("OnStatus: client status: %s -> %s", previous, current)
+		},
+	})
+	suite.NoError(err)
+
+	// Connect the client to the server.
+	suite.NoError(client.Connect())
+
+	// Wait for the client to connect to the server.
+	suite.NoError(client.WaitForStatus(Connected, 1*time.Second))
+
+	// Now we start a goroutine to listen for packets from the server.
+	go func() {
+		timeout := time.After(1 * time.Second) // Set the timeout duration
+		for {
+			select {
+			// If the context is done, we should exit the loop and goroutine.
+			case <-ctx.Done():
+				return
+			// If the timeout occurs, we should cancel the context and stop the goroutine.
+			case <-timeout:
+				suite.T().Error("timeout waiting for packet")
+				cancel()
+				return
+			// If we receive a packet, we should check the value and cancel the
+			// context to stop the goroutine.
+			case packet := <-server.Channel:
+				suite.T().Logf("client received packet from server: %s", string(packet))
+				suite.Equal("bar", string(packet))
+				// We cancel the context and stop the goroutine so the test can finish.
+				cancel()
+				return
+			}
+		}
+	}()
+
+	// We send a packet to the server.
+	n, err := client.Write([]byte("bar"))
+	suite.NoError(err)
+	suite.Equal(3, n)
+
 	// We wait for the goroutine to finish before checking the status.
 	<-ctx.Done()
+
+	// We close the server and client.
+	suite.NoError(server.Close())
+	suite.NoError(client.Close())
 
 	// We check the status of the server and client.
 	suite.Equal(Disconnected, server.GetStatus())

@@ -8,70 +8,67 @@ import (
 	"time"
 )
 
-// NewConnection creates a new connection with the given ID and address.
+// NewTCPConnection creates a new connection with the given ID and address.
 // Callers should call Connect() or Listen() on the returned connection
 // to initiate the connection process.
 //
 // Arguments:
-//   - NewConnectionArgs[T]: The arguments to pass to the connection.
+//   - NewConnectionArgs: The arguments to pass to the connection.
 //
 // Returns:
-//   - *Connection[T]
-func NewConnection(args NewConnectionArgs) (*Connection, error) {
+//   - *Connection
+func NewTCPConnection(args NewConnectionArgs) (*Connection, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	ret := &Connection{
-		// Required args:
-		Addr:       args.Addr,
-		Timeout:    args.Timeout,
-		BufferSize: args.BufferSize,
-		// Internal vars:
-		status:  Disconnected,
-		context: ctx,
-		cancel:  cancel,
-		mu:      sync.Mutex{},
-	}
-
-	if args.Addr == "" {
-		return nil, fmt.Errorf("addr argument is required")
-	}
-	if args.Timeout <= 1 {
-		return nil, fmt.Errorf("timeout duration argument must be greater than 1")
-	}
-	if args.Messages != nil {
-		ret.Packets = args.Messages
-	}
-
-	if args.BufferSize <= 0 {
-		ret.BufferSize = 1024 * 1024
-	}
-
-	// Set optional callbacks
-	if args.OnConnection != nil {
-		ret.OnConnection = args.OnConnection
-	}
-	if args.OnDisconnect != nil {
-		ret.OnDisconnect = args.OnDisconnect
-	}
-	if args.OnClose != nil {
-		ret.OnClose = args.OnClose
-	}
-	if args.OnListen != nil {
-		ret.OnListen = args.OnListen
-	}
-	if args.OnStatus != nil {
-		ret.OnStatus = args.OnStatus
-	}
-	if args.OnPacket != nil {
-		ret.OnPacket = args.OnPacket
-	}
-	if args.OnError != nil {
-		ret.OnError = args.OnError
-	}
-
-	return ret, nil
+	return &Connection{
+		Addr:         args.Addr,
+		Timeout:      args.Timeout,
+		BufferSize:   args.BufferSize,
+		Channel:      args.Channel,
+		status:       Disconnected,
+		context:      ctx,
+		cancel:       cancel,
+		mu:           sync.Mutex{},
+		conn:         &TCPConnection{},
+		OnConnection: args.OnConnection,
+		OnDisconnect: args.OnDisconnect,
+		OnClose:      args.OnClose,
+		OnStatus:     args.OnStatus,
+		OnPacket:     args.OnPacket,
+		OnError:      args.OnError,
+	}, nil
 }
 
-// Connect connects to a TCP server and returns an error if it fails.
+// NewTCPConnection creates a new connection with the given ID and address.
+// Callers should call Connect() or Listen() on the returned connection
+// to initiate the connection process.
+//
+// Arguments:
+//   - NewConnectionArgs: The arguments to pass to the connection.
+//
+// Returns:
+//   - *Connection
+func NewUDPConnection(args NewConnectionArgs) (*Connection, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Connection{
+		Addr:         args.Addr,
+		Timeout:      args.Timeout,
+		BufferSize:   args.BufferSize,
+		Channel:      args.Channel,
+		status:       Disconnected,
+		context:      ctx,
+		cancel:       cancel,
+		mu:           sync.Mutex{},
+		conn:         &UDPConnection{},
+		OnConnection: args.OnConnection,
+		OnDisconnect: args.OnDisconnect,
+		OnClose:      args.OnClose,
+		OnStatus:     args.OnStatus,
+		OnPacket:     args.OnPacket,
+		OnError:      args.OnError,
+	}, nil
+}
+
+// Connect connects to a TCP or UDP server and returns an error if it fails.
 // It will retry until it succeeds or the context is cancelled.
 //
 // Returns:
@@ -79,28 +76,21 @@ func NewConnection(args NewConnectionArgs) (*Connection, error) {
 func (c *Connection) Connect() error {
 	ch := make(chan []byte)
 	defer close(ch)
-
-	addr, err := net.ResolveTCPAddr("tcp", c.Addr)
-	if err != nil {
-		return c.error(ResolveTCPAddrError, err)
-	}
 	go func() {
 		for {
 			if c.GetStatus() == Disconnected {
-				conn, err := net.DialTCP("tcp", nil, addr)
+				err := c.conn.Connect(c.Addr)
 				if err != nil {
 					c.SetStatus(Disconnected)
 					if c.OnError != nil {
 						c.OnError(NewConnectionError, err)
 					}
-					// Continue to the next iteration of the loop for retry.
 					time.Sleep(c.Timeout)
 					continue
 				}
-				c.conn = conn
 				c.SetStatus(Connected)
 				if c.OnConnection != nil {
-					c.OnConnection(conn.RemoteAddr())
+					c.OnConnection()
 				}
 				return
 			}
@@ -109,18 +99,11 @@ func (c *Connection) Connect() error {
 	return nil
 }
 
-// Listen listens for incoming connections and handles them.
-// It will retry every 500ms until it succeeds.
+// Listen listens for incoming TCP connections and handles them.
 func (c *Connection) Listen() error {
 	if c.GetStatus() != Disconnected {
 		return fmt.Errorf("connection is already in a connected state")
 	}
-
-	addr, err := net.ResolveTCPAddr("tcp", c.Addr)
-	if err != nil {
-		return c.error(ResolveTCPAddrError, err)
-	}
-
 	go func() {
 		for {
 			select {
@@ -128,7 +111,14 @@ func (c *Connection) Listen() error {
 				return
 			default:
 				if c.GetStatus() == Disconnected {
-					listener, err := net.ListenTCP("tcp", addr)
+					err := c.conn.Listen(c.context, c.Addr, func(packet []byte) {
+						if c.OnPacket != nil {
+							c.OnPacket(packet)
+						}
+						if c.Channel != nil {
+							c.Channel <- packet
+						}
+					})
 					if err != nil {
 						c.error(ListenError, err)
 						c.SetStatus(Disconnected)
@@ -139,62 +129,15 @@ func (c *Connection) Listen() error {
 						time.Sleep(c.Timeout)
 						continue
 					}
-
 					if c.OnListen != nil {
 						c.OnListen()
 					}
 					c.SetStatus(Connected)
-
-					for {
-						select {
-						case <-c.context.Done():
-							return
-						default:
-							conn, err := listener.AcceptTCP()
-							if err != nil {
-								c.error(ListenAcceptError, err)
-								continue
-							}
-							c.conn = conn
-							if c.OnConnection != nil {
-								c.OnConnection(conn.RemoteAddr())
-							}
-							go c.handleConnection(conn)
-						}
-					}
 				}
 			}
 		}
 	}()
 	return nil
-}
-
-// handleConnection handles a new TCP connection for reading and writing packets.
-// This is a blocking function that will continue until the connection is closed
-// or an error occurs and should be run as a goroutine to not block the main thread.
-
-// Arguments:
-//   - *net.TCPConn: The TCP connection to handle.
-func (c *Connection) handleConnection(conn *net.TCPConn) {
-	buf := make([]byte, c.BufferSize)
-	for {
-		select {
-		case <-c.context.Done():
-			return
-		default:
-			n, err := conn.Read(buf)
-			if err != nil {
-				c.error(PacketReadError, err)
-				return
-			}
-			if c.Packets != nil {
-				c.Packets <- buf[:n]
-			}
-			if c.OnPacket != nil {
-				c.OnPacket(buf[:n])
-			}
-		}
-	}
 }
 
 // Write writes a packet to the connection.
@@ -205,6 +148,7 @@ func (c *Connection) handleConnection(conn *net.TCPConn) {
 //
 // Returns:
 //   - int: The number of bytes written.
+//   - error: An error if the write fails.
 func (c *Connection) Write(p []byte) (int, error) {
 	if c.GetStatus() == Connected {
 		if len(p) > c.BufferSize {
@@ -221,32 +165,7 @@ func (c *Connection) Write(p []byte) (int, error) {
 		}
 		return n, nil
 	}
-	return 0, c.error(ConnectionClosedError, fmt.Errorf("connection is not connected"))
-}
-
-// Read reads a packet from the connection.
-// It is safe to call this function from multiple goroutines.
-//
-// Arguments:
-//   - b: The buffer to read the packet into.
-//
-// Returns:
-//   - int: The number of bytes read.
-func (c *Connection) Read(b []byte) (int, []byte, error) {
-	if c.GetStatus() == Connected {
-		if len(b) > c.BufferSize {
-			return 0, nil, c.error(PacketReadError, fmt.Errorf("buffer size %d is too large for packet size %d", c.BufferSize, len(b)))
-		}
-		n, err := c.conn.Read(b)
-		if err != nil {
-			c.SetStatus(Disconnected)
-			c.Close()
-			go c.Connect()
-			return 0, nil, c.error(ConnectionResetByPeerError, err)
-		}
-		return n, b[:n], nil
-	}
-	return 0, nil, nil
+	return 0, c.error(ConnectionClosedError, fmt.Errorf("cannot write to connection: connection is not initialized"))
 }
 
 // WaitForStatus waits for the connection to reach the given status.
@@ -301,7 +220,7 @@ func (c *Connection) SetStatus(status Status) {
 		return
 	}
 	if c.OnStatus != nil {
-		c.OnStatus(status)
+		c.OnStatus(status, c.status)
 	}
 	c.status = status
 }
@@ -342,14 +261,4 @@ func (c *Connection) error(err error, original error) error {
 		c.OnError(err, original)
 	}
 	return err
-}
-
-// NewPacket creates a new packet of type []byte.
-// This is used when decoding a packet to create a new packet of the correct type.
-//
-// Returns:
-//   - []byte: A new packet of type []byte.
-func (c *Connection) NewPacket() []byte {
-	var packet []byte
-	return packet
 }

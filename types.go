@@ -16,6 +16,21 @@ const (
 
 type Status int
 
+func (s Status) String() string {
+	switch s {
+	case Disconnected:
+		return "disconnected"
+	case Reconnecting:
+		return "reconnecting"
+	case Connecting:
+		return "connecting"
+	case Connected:
+		return "connected"
+	default:
+		return "unknown"
+	}
+}
+
 const (
 	Disconnected Status = iota
 	Reconnecting
@@ -41,6 +56,22 @@ const (
 	PacketEncodeError          Error = "packet encode error"
 )
 
+type NetConn interface {
+	// Connect connects to a TCP server and returns an error if it fails.
+	// It will retry until it succeeds or the context is cancelled.
+	//
+	// Arguments:
+	//   - address string: The address of the server to connect to.
+	//
+	// Returns:
+	//   - Error: An error if the connection fails.
+	Connect(string) error
+	Write([]byte) (int, error)
+	Close() error
+	RemoteAddr() net.Addr
+	Listen(context.Context, string, func(packet []byte)) error
+}
+
 // Error implements the error interface for the Error type.
 func (e Error) Error() string {
 	return string(e)
@@ -50,21 +81,20 @@ func (e Error) Error() string {
 // The type T is the type of the packet functions.
 type Connection struct {
 	// Customizable vars:
-	ID         string
 	Addr       string
 	Timeout    time.Duration
 	BufferSize int
-	Packets    chan []byte
+	Channel    chan []byte
 	// Callbacks:
-	OnConnection func(net.Addr)
-	OnDisconnect func(net.Addr)
+	OnConnection func()
+	OnDisconnect func()
 	OnClose      func()
 	OnListen     func()
-	OnStatus     func(status Status)
+	OnStatus     func(current Status, previous Status)
 	OnPacket     func(packet []byte)
 	OnError      func(err error, original error)
 	// Internal vars:
-	conn    *net.TCPConn
+	conn    NetConn
 	status  Status
 	context context.Context
 	cancel  context.CancelFunc
@@ -76,16 +106,15 @@ type Connection struct {
 // OnConnect, OnDisconnect, OnClose, OnStatus, OnPacket, and OnError are optional.
 // If not set, they will be no-op functions.
 type NewConnectionArgs struct {
-	ID           string
 	Addr         string
 	Timeout      time.Duration
 	BufferSize   int
-	Messages     chan []byte
-	OnConnection func(net.Addr)
-	OnDisconnect func(net.Addr)
+	Channel      chan []byte
+	OnConnection func()
+	OnDisconnect func()
 	OnListen     func()
 	OnClose      func()
-	OnStatus     func(status Status)
+	OnStatus     func(current Status, previous Status)
 	OnPacket     func(packet []byte)
 	OnError      func(err error, original error)
 }
