@@ -39,29 +39,7 @@ Connection methods:
 
 ### Creating a Connection
 
-To create a connection to a remote server, use the `NewConnection` method and pass in a `NewConnectionArgs` struct.
-
-First, let's define a simple struct that we will use to send and receive data and an encoder/decoder for that struct
-so the connection manager knows how to encode and decode the data:
-
-```go
-type SimpleStruct struct {
- Foo string `json:"foo"`
-}
-
-func (s *SimpleStruct) Encode() ([]byte, error) {
- return json.Marshal(s)
-}
-
-func (s *SimpleStruct) Decode(data []byte) error {
- err := json.Unmarshal(data, s)
- if err != nil {
-  fmt.Printf("error decoding: %v\n", err)
-  return err
- }
- return nil
-}
-```
+To create a connection to a remote server, use the `NewTCPConnection` method and pass in a `NewConnectionArgs` struct.
 
 Here is an example of a server and client that communicate with each other:
 
