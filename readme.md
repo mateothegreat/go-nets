@@ -47,7 +47,7 @@ Here is an example of a server and client that communicate with each other:
 ch := make(chan []byte)
 
 server, err := nets.NewTCPConnection(nets.NewConnectionArgs{
-  Addr:       suite.addr,
+  Addr:       "127.0.0.1:5200",
   BufferSize: 13,
   Timeout:    500 * time.Millisecond,
   Channel:    make(chan []byte),
