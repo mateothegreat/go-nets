@@ -51,6 +51,7 @@ func (suite *TestSourceSuite) TestTCPConnection() {
 		BufferSize: 13,
 		Timeout:    500 * time.Millisecond,
 		Channel:    make(chan []byte),
+		Stats:      true,
 		OnClose: func() {
 		},
 		OnStatus: func(current Status, previous Status) {
@@ -82,6 +83,7 @@ func (suite *TestSourceSuite) TestTCPConnection() {
 		Addr:       suite.addr,
 		BufferSize: 13,
 		Timeout:    500 * time.Millisecond,
+		Stats:      true,
 		OnStatus: func(current Status, previous Status) {
 			suite.T().Logf("OnStatus: client status: %s -> %s", previous, current)
 		},
@@ -131,6 +133,12 @@ func (suite *TestSourceSuite) TestTCPConnection() {
 	suite.NoError(server.Close())
 	suite.NoError(client.Close())
 
+	// Check the stats.
+	suite.Equal(1, client.Stats.Sent.OK.Packets)
+	suite.Equal(3, client.Stats.Sent.OK.Bytes)
+	suite.Equal(1, server.Stats.Received.OK.Packets)
+	suite.Equal(3, server.Stats.Received.OK.Bytes)
+
 	// We check the status of the server and client.
 	suite.Equal(Disconnected, server.GetStatus())
 	suite.Equal(Disconnected, client.GetStatus())
@@ -146,6 +154,7 @@ func (suite *TestSourceSuite) TestUDPConnection() {
 		Addr:       suite.addr,
 		BufferSize: 13,
 		Timeout:    500 * time.Millisecond,
+		Stats:      true,
 		Channel:    make(chan []byte),
 		OnClose: func() {
 		},
@@ -178,6 +187,7 @@ func (suite *TestSourceSuite) TestUDPConnection() {
 		Addr:       suite.addr,
 		BufferSize: 13,
 		Timeout:    500 * time.Millisecond,
+		Stats:      true,
 		OnStatus: func(current Status, previous Status) {
 			suite.T().Logf("OnStatus: client status: %s -> %s", previous, current)
 		},
@@ -222,6 +232,12 @@ func (suite *TestSourceSuite) TestUDPConnection() {
 
 	// We wait for the goroutine to finish before checking the status.
 	<-ctx.Done()
+
+	// Check the stats.
+	suite.Equal(1, client.Stats.Sent.OK.Packets)
+	suite.Equal(3, client.Stats.Sent.OK.Bytes)
+	suite.Equal(1, server.Stats.Received.OK.Packets)
+	suite.Equal(3, server.Stats.Received.OK.Bytes)
 
 	// We close the server and client.
 	suite.NoError(server.Close())

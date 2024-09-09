@@ -19,7 +19,7 @@ import (
 //   - *Connection
 func NewTCPConnection(args NewConnectionArgs) (*Connection, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Connection{
+	conn := &Connection{
 		Addr:         args.Addr,
 		Timeout:      args.Timeout,
 		BufferSize:   args.BufferSize,
@@ -35,7 +35,11 @@ func NewTCPConnection(args NewConnectionArgs) (*Connection, error) {
 		OnStatus:     args.OnStatus,
 		OnPacket:     args.OnPacket,
 		OnError:      args.OnError,
-	}, nil
+	}
+	if args.Stats {
+		conn.Stats = &ConnectionStats{}
+	}
+	return conn, nil
 }
 
 // NewTCPConnection creates a new connection with the given ID and address.
@@ -49,7 +53,7 @@ func NewTCPConnection(args NewConnectionArgs) (*Connection, error) {
 //   - *Connection
 func NewUDPConnection(args NewConnectionArgs) (*Connection, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Connection{
+	conn := &Connection{
 		Addr:         args.Addr,
 		Timeout:      args.Timeout,
 		BufferSize:   args.BufferSize,
@@ -65,7 +69,11 @@ func NewUDPConnection(args NewConnectionArgs) (*Connection, error) {
 		OnStatus:     args.OnStatus,
 		OnPacket:     args.OnPacket,
 		OnError:      args.OnError,
-	}, nil
+	}
+	if args.Stats {
+		conn.Stats = &ConnectionStats{}
+	}
+	return conn, nil
 }
 
 // Connect connects to a TCP or UDP server and returns an error if it fails.
@@ -118,6 +126,9 @@ func (c *Connection) Listen() error {
 						if c.Channel != nil {
 							c.Channel <- packet
 						}
+						if c.Stats != nil {
+							c.Stats.AddReceived(ConnectionPacketStatusOK, len(packet))
+						}
 					})
 					if err != nil {
 						c.error(ListenError, err)
@@ -159,9 +170,15 @@ func (c *Connection) Write(p []byte) (int, error) {
 			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "write: broken pipe" {
 				c.Close()
 				c.Connect()
+				if c.Stats != nil {
+					c.Stats.AddSent(ConnectionPacketStatusFailed, len(p))
+				}
 				return 0, c.error(ConnectionResetByPeerError, err)
 			}
 			return 0, c.error(PacketWriteError, err)
+		}
+		if c.Stats != nil {
+			c.Stats.AddSent(ConnectionPacketStatusOK, n)
 		}
 		return n, nil
 	}

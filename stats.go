@@ -14,12 +14,26 @@ const (
 	ConnectionPacketStatusFailed ConnectionPacketStatus = "failed"
 )
 
+// ConnectionStatuses is a struct that contains the stats for
+// sent and received packets.
+type ConnectionStatuses struct {
+	OK     ConnectionStat
+	Failed ConnectionStat
+}
+
+// ConnectionStat is a struct that contains the stats for
+// sent and received packets.
+type ConnectionStat struct {
+	Packets int
+	Bytes   int
+}
+
 // ConnectionStats is a struct that contains the stats for
 // sent and received packets.
 type ConnectionStats struct {
 	mu       sync.Mutex
-	sent     map[ConnectionPacketStatus]int
-	received map[ConnectionPacketStatus]int
+	Sent     ConnectionStatuses
+	Received ConnectionStatuses
 }
 
 // Add adds a packet to the stats.
@@ -27,10 +41,17 @@ type ConnectionStats struct {
 //
 // Arguments:
 //   - ConnectionPacketStatus: The status of the packet.
-func (c *ConnectionStats) Add(status ConnectionPacketStatus) {
+//   - bytes int: The number of bytes in the packet.
+func (c *ConnectionStats) AddSent(status ConnectionPacketStatus, bytes int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.sent[status]++
+	if status == ConnectionPacketStatusOK {
+		c.Sent.OK.Packets++
+		c.Sent.OK.Bytes += bytes
+	} else {
+		c.Sent.Failed.Packets++
+		c.Sent.Failed.Bytes += bytes
+	}
 }
 
 // AddReceived adds a received packet to the stats.
@@ -38,10 +59,17 @@ func (c *ConnectionStats) Add(status ConnectionPacketStatus) {
 //
 // Arguments:
 //   - ConnectionPacketStatus: The status of the packet.
-func (c *ConnectionStats) AddReceived(status ConnectionPacketStatus) {
+//   - bytes int: The number of bytes in the packet.
+func (c *ConnectionStats) AddReceived(status ConnectionPacketStatus, bytes int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.received[status]++
+	if status == ConnectionPacketStatusOK {
+		c.Received.OK.Packets++
+		c.Received.OK.Bytes += bytes
+	} else {
+		c.Received.Failed.Packets++
+		c.Received.Failed.Bytes += bytes
+	}
 }
 
 // Get returns the number of packets with the given status.
@@ -52,22 +80,8 @@ func (c *ConnectionStats) AddReceived(status ConnectionPacketStatus) {
 //
 // Returns:
 //   - int: The number of packets with the given status.
-func (c *ConnectionStats) Get(status ConnectionPacketStatus) int {
+func (c *ConnectionStats) Get() *ConnectionStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if status == ConnectionPacketStatusOK {
-		return c.sent[status]
-	}
-	return c.received[status]
-}
-
-// NewConnectionStats creates a new ConnectionStats struct.
-//
-// Returns:
-//   - *ConnectionStats: A new ConnectionStats struct.
-func NewConnectionStats() *ConnectionStats {
-	return &ConnectionStats{
-		sent:     make(map[ConnectionPacketStatus]int),
-		received: make(map[ConnectionPacketStatus]int),
-	}
+	return c
 }

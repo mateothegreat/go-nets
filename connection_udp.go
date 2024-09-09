@@ -7,8 +7,9 @@ import (
 )
 
 type UDPConnection struct {
-	conn *net.UDPConn
-	addr *net.UDPAddr
+	conn  *net.UDPConn
+	addr  *net.UDPAddr
+	stats *ConnectionStats
 }
 
 func (u *UDPConnection) Connect(address string) error {

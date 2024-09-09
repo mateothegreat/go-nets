@@ -93,6 +93,8 @@ type Connection struct {
 	OnStatus     func(current Status, previous Status)
 	OnPacket     func(packet []byte)
 	OnError      func(err error, original error)
+	// External vars:
+	Stats *ConnectionStats
 	// Internal vars:
 	conn    NetConn
 	status  Status
@@ -110,6 +112,7 @@ type NewConnectionArgs struct {
 	Timeout      time.Duration
 	BufferSize   int
 	Channel      chan []byte
+	Stats        bool
 	OnConnection func()
 	OnDisconnect func()
 	OnListen     func()
