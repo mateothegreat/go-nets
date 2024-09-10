@@ -85,3 +85,12 @@ func (c *ConnectionStats) Get() *ConnectionStats {
 	defer c.mu.Unlock()
 	return c
 }
+
+// NewConnectionStats creates a new ConnectionStats.
+func NewConnectionStats() *ConnectionStats {
+	return &ConnectionStats{
+		mu:       sync.Mutex{},
+		Sent:     ConnectionStatuses{},
+		Received: ConnectionStatuses{},
+	}
+}

@@ -37,7 +37,7 @@ func NewTCPConnection(args NewConnectionArgs) (*Connection, error) {
 		OnError:      args.OnError,
 	}
 	if args.Stats {
-		conn.Stats = &ConnectionStats{}
+		conn.Stats = NewConnectionStats()
 	}
 	return conn, nil
 }
@@ -71,7 +71,7 @@ func NewUDPConnection(args NewConnectionArgs) (*Connection, error) {
 		OnError:      args.OnError,
 	}
 	if args.Stats {
-		conn.Stats = &ConnectionStats{}
+		conn.Stats = NewConnectionStats()
 	}
 	return conn, nil
 }
@@ -256,7 +256,6 @@ func (c *Connection) Close() error {
 		if err := c.conn.Close(); err != nil {
 			return c.error(ConnectionClosedError, err)
 		}
-		c.conn = nil
 	}
 	c.SetStatus(Disconnected)
 	if c.OnClose != nil {
